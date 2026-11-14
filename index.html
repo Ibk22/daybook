@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Daybook — what did my agents do today?</title>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px;
+         margin: 2rem auto; padding: 0 1rem; color: #1a1a1a; line-height: 1.5; }
+  h1 { font-size: 1.6rem; margin-bottom: .2rem; }
+  .sub { color: #555; margin-top: 0; }
+  input[type=text] { width: 100%; padding: .6rem; font-size: 1rem;
+                     font-family: monospace; box-sizing: border-box; }
+  button { padding: .6rem 1rem; font-size: 1rem; margin: .5rem .4rem .5rem 0;
+           cursor: pointer; }
+  .panel { border: 1px solid #ddd; border-radius: 10px; padding: 1rem;
+           margin: 1rem 0; }
+  .exposure { border: 2px solid #b00; background: #fff5f5; }
+  .exposure.clean { border-color: #1a7f37; background: #f0fff4; }
+  .exposure.caution { border-color: #b7791f; background: #fffbeb; }
+  .verdict { font-weight: 700; font-size: 1.1rem; }
+  table { width: 100%; border-collapse: collapse; }
+  td, th { text-align: left; padding: .35rem .2rem; border-bottom: 1px solid #eee; }
+  .muted { color: #666; font-size: .9rem; }
+  #status { color: #555; }
+  .demo-tag { background: #eee; padding: .1rem .5rem; border-radius: 6px;
+              font-size: .85rem; }
+</style>
+</head>
+<body>
+<h1>Daybook</h1>
+<p class="sub">Paste an agent wallet address. Get a plain-language briefing on
+what your agents did, what they earned, and what they are exposed to.
+Read-only — nothing signs, nothing moves.</p>
+
+<label for="addr">Agent wallet address</label><br>
+<input id="addr" type="text" placeholder="0x…" spellcheck="false">
+<div>
+  <button id="demoBtn">Use demo wallet (my Agentic Wallet)</button>
+  <button id="liveBtn">Get briefing (live)</button>
+  <button id="demoModeBtn">Get briefing (cached demo)</button>
+</div>
+<p id="status"></p>
+
+<div id="result" hidden>
+  <div class="panel exposure" id="exposurePanel">
+    <h2>Exposure Check <span class="demo-tag" id="demoTag" hidden>cached demo</span></h2>
+    <p class="verdict" id="verdict"></p>
+    <div id="approvals"></div>
+    <div id="flagged"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Briefing</h2>
+    <p id="briefing"></p>
+    <p class="muted" id="meta"></p>
+  </div>
+
+  <div class="panel">
+    <h2>Your collections</h2>
+    <table>
+      <thead><tr><th>Collection</th><th>You hold</th><th>Total minted</th>
+      <th>Revenue in contract</th></tr></thead>
+      <tbody id="holdings"></tbody>
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2>Recent activity <span class="muted">(last ~14 hours)</span></h2>
+    <div id="activity"></div>
+  </div>
+</div>
+
+<script>
+const DEMO = "0x2E537b76c59042C45e669CD8DAb2c4817e93691A";
+const addrEl = document.getElementById("addr");
+document.getElementById("demoBtn").onclick = () => { addrEl.value = DEMO; };
+async function fetchBriefing(mode) {
+  const a = addrEl.value.trim();
+  const status = document.getElementById("status");
+  const result = document.getElementById("result");
+  if (!/^0x[0-9a-fA-F]{40}$/.test(a)) {
+    status.textContent = "That does not look like a wallet address — it should start 0x and be 42 characters.";
+    return;
+  }
+  status.textContent = mode === "demo" ? "Loading cached demo snapshot…" : "Reading the chain…";
+  result.hidden = true;
+  try {
+    const r = await fetch("/api/briefing?address=" + encodeURIComponent(a) + "&mode=" + mode);
+    const d = await r.json();
+    if (!r.ok) { status.textContent = "Could not read the chain: " + (d.error || r.status); return; }
+    status.textContent = "";
+    result.hidden = false;
+    document.getElementById("demoTag").hidden = !d.demo;
+    const panel = document.getElementById("exposurePanel");
+    panel.className = "panel exposure " +
+      (d.verdict.startsWith("CLEAN") ? "clean" : d.verdict.startsWith("CAUTION") ? "caution" : "");
+    document.getElementById("verdict").textContent = d.verdict;
+    document.getElementById("approvals").innerHTML = d.approvals.length
+      ? "<p>Open approvals:</p><ul>" + d.approvals.map(x =>
+          "<li><b>" + x.token + "</b> → " + x.spender +
+          (x.unlimited ? " — <b>UNLIMITED</b>, it can move your funds without asking again" : " — limited") +
+          "</li>").join("") + "</ul>"
+      : "<p>No open USDT/WBNB approvals with the checked spenders.</p>";
+    document.getElementById("flagged").innerHTML = d.flagged_details.length
+      ? "<p>Flagged contracts touched:</p><ul>" + d.flagged_details.map(x =>
+          "<li><b>" + x.label + "</b> — " + x.note + "</li>").join("") + "</ul>" : "";
+    document.getElementById("briefing").textContent = d.briefing;
+    document.getElementById("meta").textContent =
+      (d.demo ? "Cached snapshot from " + d.demo_as_of + ". " + d.demo_note + " "
+              : "Live read at block " + d.block + ". ") +
+      "Wallet balance: " + (d.wallet_bnb_wei / 1e18).toFixed(5) + " BNB.";
+    document.getElementById("holdings").innerHTML = d.holdings.map(h =>
+      "<tr><td>" + h.name + "</td><td>" + (h.held === null ? "—" : h.held) +
+      "</td><td>" + (h.minted === null ? "—" : h.minted) +
+      "</td><td>" + (h.contract_bnb_wei / 1e18).toFixed(4) + " BNB</td></tr>").join("");
+    document.getElementById("activity").innerHTML = d.transfers.length
+      ? "<ul>" + d.transfers.slice(0, 20).map(t =>
+          "<li>" + (t.direction === "in" ? "Received" : "Sent") + " — " +
+          (t.category === "721" ? "NFT" : t.category === "1155" ? "NFT (1155)" : "token") +
+          " · contract <code>" + t.contract.slice(0, 10) + "…</code>" +
+          (t.token_id ? " · token #" + t.token_id : "") +
+          ' · <a href="https://bscscan.com/tx/' + t.tx + '" target="_blank" rel="noopener">tx</a></li>'
+        ).join("") + "</ul>"
+      : "<p>No transfers in the window" + (d.demo ? " (demo snapshot carries no transfer list)." : ".") + "</p>";
+  } catch (e) {
+    status.textContent = "Could not reach the server: " + e.message;
+  }
+}
+document.getElementById("liveBtn").onclick = () => fetchBriefing("live");
+document.getElementById("demoModeBtn").onclick = () => fetchBriefing("demo");
+</script>
+</body>
+</html>
